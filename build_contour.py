@@ -13,14 +13,12 @@ from utility import copy_fc, create_geodatabase, create_feature_dataset, reproje
 import raster
 
 using_gdal = True
-""" Can't get imports to happen yet
-sys.path.append(r'C:\Users/bwilson/GDAL/bin/gdal/python')
+#sys.path.append(r'C:\Users/bwilson/GDAL/bin/gdal/python')
 from osgeo import gdal, gdal_array
 from osgeo.gdalconst import *
 from osgeo import ogr
-"""
-import subprocess
-os.environ['GDAL_DATA'] = r'C:\Users/bwilson/GDAL/bin/gdal-data' # So it can find the PROJ4 CSV tables
+#import subprocess
+#os.environ['GDAL_DATA'] = r'C:\Users/bwilson/GDAL/bin/gdal-data' # So it can find the PROJ4 CSV tables
 
 arcpy.CheckOutExtension("3D")
 arcpy.CheckOutExtension("Spatial")
@@ -46,12 +44,10 @@ def gdal_contour(tif,shp,interval):
     rough_shp.CreateField(ftype)
 
     # See http://www.gdal.org/gdal__alg_8h.html#aceaf98ad40f159cbfb626988c054c085
-    # and /Library/Frameworks/GDAL.framework/Versions/1.11/Python/2.7/site-packages/osgeo/gdal.py
     # ContourGenerate(Band srcBand, double contourInterval, double contourBase, 
     #    int fixedLevelCount, int useNoData, double noDataValue, 
-    #    OGRLayerShadow dstLayer, int idField, 
-    #    int elevField, GDALProgressFunc callback = None, 
-    #    void callback_data = None) -> int
+    #    OGRLayerShadow dstLayer, int idField, int elevField,
+    #    GDALProgressFunc callback = None, void callback_data = None) -> int
     gdal.ContourGenerate(rasband1, self.interval, 0, 
                          0, False, None, # # FixedLevelCount, NODATA settings
                          rough_shp, # dest layer
