@@ -1,4 +1,5 @@
-#!/c/Python27/ARcGISx6410.5/python
+#!/c/Python27/ARcGISx6410.5/python -u
+# -u forced unbuffered print so we can see progess messages
 #
 #  Build a contour layer and annotate it.
 #
@@ -11,8 +12,58 @@ from glob import glob
 from utility import copy_fc, create_geodatabase, create_feature_dataset, reproject
 import raster
 
+using_gdal = True
+""" Can't get imports to happen yet
+sys.path.append(r'C:\Users/bwilson/GDAL/bin/gdal/python')
+from osgeo import gdal, gdal_array
+from osgeo.gdalconst import *
+from osgeo import ogr
+"""
+import subprocess
+os.environ['GDAL_DATA'] = r'C:\Users/bwilson/GDAL/bin/gdal-data' # So it can find the PROJ4 CSV tables
+
 arcpy.CheckOutExtension("3D")
 arcpy.CheckOutExtension("Spatial")
+
+def gdal_contour(tif,shp,interval):
+    contour_bin = "gdal_contour"
+    args = [contour_bin, "-i", str(interval), "-a", "Contour", tif, shp]
+    rval = subprocess.check_output(args)
+    """
+    Oh how I wish I could use this code
+    raster_ds = gdal.Open(self.dem_path, GA_ReadOnly)
+    rasband1 = raster_ds.GetRasterBand(1)
+    ogr_ds = ogr.GetDriverByName("ESRI Shapefile").CreateDataSource(rough_path)
+    rough_shp = ogr_ds.CreateLayer(rough_fc)
+
+    fid = ogr.FieldDefn("ID",ogr.OFTInteger)
+    rough_shp.CreateField(fid)
+                
+    felev = ogr.FieldDefn("Contour", ogr.OFTReal)
+    rough_shp.CreateField(felev)
+                
+    ftype = ogr.FieldDefn("Type", ogr.OFTInteger) # 1=intermediate 2=indexed
+    rough_shp.CreateField(ftype)
+
+    # See http://www.gdal.org/gdal__alg_8h.html#aceaf98ad40f159cbfb626988c054c085
+    # and /Library/Frameworks/GDAL.framework/Versions/1.11/Python/2.7/site-packages/osgeo/gdal.py
+    # ContourGenerate(Band srcBand, double contourInterval, double contourBase, 
+    #    int fixedLevelCount, int useNoData, double noDataValue, 
+    #    OGRLayerShadow dstLayer, int idField, 
+    #    int elevField, GDALProgressFunc callback = None, 
+    #    void callback_data = None) -> int
+    gdal.ContourGenerate(rasband1, self.interval, 0, 
+                         0, False, None, # # FixedLevelCount, NODATA settings
+                         rough_shp, # dest layer
+                         0, # index of fid
+                         1 # index of felev
+                         ) 
+    raster_ds = None
+    del raster_ds
+    ogr_ds = None # Dereference to close shapefile
+    del ogr_ds
+    """
+    return rval
 
 class contour(object):
 
@@ -37,6 +88,7 @@ class contour(object):
         folder, gdb = os.path.split(output_location)
         self.output_location = output_location
 
+        self.folder = folder
         self.workspace = os.path.join(folder, "workspace.gdb")
         create_geodatabase(self.workspace)
 
@@ -46,12 +98,12 @@ class contour(object):
         return
 
     def tune_dem(self, dem):
-        """ Set up a raster to use as the source for our contours. """
+        """ Set up a raster to use as the source for our contours. Generate TIF files so we can use GDAL tools if we want. """
 
-        final_dem = os.path.join(self.workspace, "raster_Smooth")
+        final_dem = os.path.join(self.folder, "raster_Smooth.tif")
         if not arcpy.Exists(final_dem):
             print("Reprojecting %s" % dem)
-            dem_projected = os.path.join(self.workspace, "raster_Project")
+            dem_projected = os.path.join(self.folder, "raster_Project.tif")
             raster.reproject(dem, dem_projected, self.sref_obj)
 
             radius = 2
@@ -69,37 +121,63 @@ class contour(object):
         # First build a rough contour (with many tiny features)
         # then copy it less those features to the final resting place.
 
-        arcpy.env.workspace = self.workspace
-
         rough_fc = "contour_%d_Rough" % self.interval
-        rough_path = os.path.join(self.workspace, rough_fc)
+        rough_path = os.path.join(self.folder, rough_fc + '.shp')
+
+        shape_length = "SHAPE_Leng" # name in a shapefile
+
         if arcpy.Exists(rough_path):
-            print("\tAlready have '%s'\n" % rough_fc)
+            print("\tSkipping '%s'\n" % rough_path)
         else:
             # This creates a feature class that will have a field called "Type" to indicate
             # if a contour should be indexed or not
 
-            arcpy.ContourWithBarriers_3d(self.dem_path, rough_path, 
+            if using_gdal:
+                gdal_contour(self.dem_path,rough_path,self.interval)
+                # Note that this file will not have the magic Shape_Leng field that ArcGIS creates.
+                # but if you copy the fc with arcpy to the fgdb then it gets added!
+            else:
+                arcpy.ContourWithBarriers_3d(self.dem_path, rough_path, 
                                          "", # barrier fc
                                          "POLYLINES",
                                          "", # values file
-                                         "NO_EXPLICIT_VALUES_ONLY",
-                                         0, #base
+                                         "", 
+                                         "", #base
                                          self.interval, self.index_interval,
                                          "", # explicit contour list
                                          z_factor
                                          )
 
-        interval_path = os.path.join(self.output_location, "contour_%d" % self.interval)
+        interval_layer = "contour_%d" % self.interval
+        interval_path = os.path.join(self.output_location, interval_layer)
         if not arcpy.Exists(interval_path):
-            print("\tSelecting features that are not tiny.")
-            selection_layer = rough_fc + "_Layer"
-            arcpy.MakeFeatureLayer_management(rough_path, selection_layer, "Shape_Length>%d" % self.shortest)
-            print("Cleaned up the shapes")
+            # Selection with length fails with GDAL generated shapefile so I am copying first then select and delete
 
-        if not arcpy.Exists(interval_path):
-            print("Copy contours from simplified")
+            print("Copy contours frome shapefile to fgdb")
             copy_fc(rough_path, interval_path)
+
+            print("\tDeleting features that are tiny from '%s'." % interval_layer)
+
+            selection_layer = interval_layer + "_Layer"
+            shape_length = arcpy.ValidateFieldName("Shape_Length", interval_path)
+            arcpy.MakeFeatureLayer_management(interval_path, selection_layer, "\"%s\"<%d" % (shape_length,self.shortest), self.folder)
+            arcpy.DeleteFeatures_management(selection_layer)
+
+            try:
+                arcpy.AddField_management(interval_path, "Type", "SHORT")
+            except:
+                print("Already have Type in '%s'" % interval_layer)
+                pass
+
+            contour = "Contour"
+            selection_layer = interval_layer + "_INTERVAL_Layer"
+
+            arcpy.MakeFeatureLayer_management(interval_path, selection_layer, "Mod(%s,%d)<>0" % (contour, self.index_interval))
+            arcpy.CalculateField_management(selection_layer, "Type", 1, "PYTHON_9.3")
+
+            selection_layer = interval_layer + "_INDEXED_Layer"
+            arcpy.MakeFeatureLayer_management(interval_path, selection_layer, "Mod(%s,%d)=0"  % (contour, self.index_interval))
+            arcpy.CalculateField_management(selection_layer, "Type", 2, "PYTHON_9.3")
 
         return
 
@@ -124,17 +202,17 @@ class contour(object):
         create_feature_dataset(dataset, self.sref_obj)
 
         output_layer = "Contours_%d" % self.interval
-        print(contour_path, dataset, self.reference_scale, output_layer)
+        print("Creating annotation.", contour_fc, dataset, self.reference_scale, output_layer)
         arcpy.ContourAnnotation_cartography(contour_path, dataset, "Contour", str(self.reference_scale), output_layer,
                                             "BROWN", "Type", "PAGE", "ENABLE_LADDERING")
 
-        print("Creating layer file.")
+        print("Creating contour layer file.")
         layerfile = os.path.join(folder, "contour_%d.lyr" % self.interval)
         if arcpy.Exists(layerfile):
             try:
                 arcpy.Delete_management(layerfile)
             except Exception as e:
-                print ("Delete of '%s' failed, " % layerfile, e)
+                print("Delete of '%s' failed, " % layerfile, e)
 
         arcpy.SaveToLayerFile_management(output_layer, layerfile, "RELATIVE", "CURRENT")
 
@@ -165,19 +243,19 @@ if __name__ == "__main__":
     c.index_interval = 5
     c.interval = 1
     c.reference_scale = 625
-    c.build_lines()
+#    c.build_lines()
     c.build_annotation()
 
     c.index_interval = 10
     c.interval = 2
     c.reference_scale = 1250
-    c.build_lines()
+#    c.build_lines()
     c.build_annotation()
 
     c.index_interval = 20
     c.interval = 4
     c.reference_scale = 2500
-    c.build_lines()
+#    c.build_lines()
     c.build_annotation()
 
     exit(0)
